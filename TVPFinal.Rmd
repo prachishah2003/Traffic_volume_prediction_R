@@ -1,0 +1,312 @@
+---
+title: "Traffic volume prediction in R"
+author: "Batch 3 Group 4 ENTC-C"
+date: "2023-04-23" 
+output: html_document
+---
+
+```{r setup,include=FALSE}
+knitr::opts_chunk$set(warning=FALSE,message=FALSE)
+```
+
+
+```{r}
+#'libraries
+library(caret)
+library(Metrics)
+library(rockchalk)   
+library(rpart)
+library(rpart.plot)
+library(randomForest)
+library(summarytools)
+library(ggplot2)
+library(dplyr)
+library(xgboost)
+library(gbm)
+library(caTools)
+library(cvms)
+library(forecast)
+library(zoo)
+library(xts)
+```
+
+
+```{r}
+#load the dataset
+traffic_data<-read.csv("C:\\Users\\Education\\Desktop\\Metro_Interstate_Traffic_Volume.csv",header=TRUE)
+summary(traffic_data)
+```
+
+```{r}
+summary(traffic_data$temp)
+```
+```{r}
+summary(traffic_data$snow_1h)
+
+```
+```{r}
+summary(traffic_data$rain_1h)
+```
+```{r}
+summary(traffic_data$clouds_all)
+```
+```{r}
+table(traffic_data$holiday)
+```
+
+```{r}
+#data formatting and adding columns
+
+time<-format(as.POSIXct(traffic_data$date_time), format = "%H:%M")
+traffic_data$time=time
+date<-as.Date(traffic_data$date_time)
+traffic_data$date=date  
+
+day<-format(traffic_data$date,"%A")
+traffic_data$day=day
+month<-format(traffic_data$date,"%B")
+traffic_data$month=month
+```
+
+```{r}
+library(corrplot)
+
+corrplot.mixed(cor(traffic_data[,sapply(traffic_data,is.numeric)],use="complete.obs",method="pearson"),
+               lower = "number",
+               upper = "circle",
+               tl.col = "black")
+
+panel.cor <- function(x, y, digits = 2, prefix = "", cex.cor, ...) {
+  usr <- par("usr")
+  on.exit(par(usr))
+  par(usr = c(0, 1, 0, 1))
+  Cor <- abs(cor(x, y)) # Remove abs function if desired
+  txt <- paste0(prefix, format(c(Cor, 0.123456789), digits = digits)[1])
+  if(missing(cex.cor)) {
+    cex.cor <- 0.4 / strwidth(txt)
+  }
+  text(0.5, 0.5, txt,
+       cex = 1 + cex.cor * Cor) # Resize the text by level of correlation
+}
+```
+
+```{r}
+# Plotting the correlation matrix
+
+pairs(traffic_data[,sapply(traffic_data,is.numeric)],use="complete.obs",method="pearson",
+      upper.panel = panel.cor,    # Correlation panel
+      lower.panel = panel.smooth) # Smoothed regression lines
+
+```
+
+```{r}
+#data visualization
+g<-ggplot(data=traffic_data,aes(x=weather_main,y=traffic_volume))
+g<-g+geom_bar(stat="identity")
+g
+```
+
+```{r}
+g1<-ggplot(data=traffic_data,aes(x=weather_description,y=traffic_volume))
+g1<-g+geom_bar(stat="identity")
+g1
+```
+
+```{r}
+boxplot(traffic_data$traffic_volume~traffic_data$day, main="day and volume", ylab="Volume", xlab='day', col='cyan')
+
+```
+
+```{r}
+boxplot(traffic_data$traffic_volume~traffic_data$month, main="month and volume", ylab="Volume", xlab='month', col='cyan')
+```
+
+```{r}
+g2<-ggplot(data=traffic_data,aes(x=clouds_all,y=traffic_volume))
+g2<-g+geom_bar(stat="identity")
+g2
+```
+
+```{r}
+g3<-ggplot(data=traffic_data,aes(y=temperature,x=traffic_volume))
+g3<-g+geom_bar(stat="identity")+ylim(-100,300)
+g3
+```
+
+```{r}
+p <- traffic_data %>% ggplot(aes(time, traffic_volume )) +
+  geom_point(aes(color = day,size=0.1)) + 
+  xlab("TIME") + ylab("TOTAL")
+p+ggtitle("Scatter")
+```
+
+```{r}
+traffic_data$snow_1h<-NULL
+```
+
+```{r}
+#data pre-processing
+preProcCols<-traffic_data[,2:8]
+preProcVals<-preProcess(preProcCols,method=c("center","scale"))
+traffic_data[,2:8]<-predict(preProcVals,traffic_data[,2:8])
+```
+
+```{r}
+str(traffic_data)
+```
+
+```{r}
+#dividing data into train and test data sets
+set.seed(123)
+train_index <- createDataPartition(traffic_data$traffic_volume, p = 0.8, list = FALSE)
+train_data <- traffic_data[train_index, ]
+test_data <- traffic_data[-train_index, ]
+```
+
+```{r}
+#linear regression model
+set.seed(123)
+model_lm <- lm(traffic_volume ~ temp + weather_main+ rain_1h + clouds_all + holiday + date+time, data = train_data)
+predictions <- predict(model_lm, newdata = test_data)
+hist(ae(predictions,test_data$traffic_volume),xlab="Difference between predicted and actual traffic volume",main="Error values")
+```
+
+```{r}
+summary(model_lm)
+```
+
+```{r}
+mae_lm <- mean(abs(test_data$traffic_volume - predictions))
+mae_lm
+```
+
+```{r}
+prediction_lm<-data.frame(date_time=test_data$date_time,traffic_volume=as.integer(predictions))
+write.csv(prediction_lm,"lm.csv",row.names = F)
+```
+
+```{r}
+set.seed(123)
+# Train the decision tree model
+model_dt <- rpart(traffic_volume ~temp +weather_main+ rain_1h + clouds_all + holiday + date+time, data = train_data, method = "anova")
+
+# Visualize the decision tree
+rpart.plot(model_dt, main = "Decision Tree for Traffic Volume Prediction")
+```
+
+```{r}
+# Make predictions on the test data
+predictions_dt <- predict(model_dt, newdata = test_data)
+
+# Evaluate the model's accuracy
+hist(ae(predictions_dt,test_data$traffic_volume),xlab="Difference between predicted and actual traffic volume",main="Error values")
+
+```
+
+```{r}
+rmse_dt <- sqrt(mean((test_data$traffic_volume - predictions_dt)^2))
+mae_dt <- mean(abs(test_data$traffic_volume - predictions_dt))
+rsq_dt <- cor(test_data$traffic_volume, predictions_dt)^2
+
+# Print the metrics
+cat("Decision trees RMSE:", rmse_dt, "\n")
+cat("Decision trees MAE", mae_dt, "\n")
+cat("Decision trees RMSE R-squared:", rsq_dt, "\n")
+```
+
+```{r}
+# Make predictions on the test data
+predictions_dt <- predict(model_dt, newdata = test_data)
+
+# Evaluate the model's accuracy
+hist(ae(predictions_dt,test_data$traffic_volume),xlab="Difference between predicted and actual traffic volume",main="Error values")
+```
+
+```{r}
+#random forest
+set.seed(123)
+RFmodel = randomForest(formula=traffic_volume ~temp +weather_main+ rain_1h + clouds_all + holiday + date+time, data = train_data, mtry = 5, nodesize = 5, ntree = 300, importance = TRUE)
+print(RFmodel)
+```
+
+```{r}
+plot(RFmodel)
+```
+
+```{r}
+importance(RFmodel)
+```
+
+```{r}
+set.seed(123)
+varImpPlot(RFmodel,type=2, main = "Important predictors in the analysis")
+```
+
+```{r}
+# Make predictions on the test data
+predictions_rf <- predict(RFmodel, newdata = test_data)
+
+# Evaluate the model's accuracy
+hist(ae(predictions_rf,test_data$traffic_volume),xlab="Difference between predicted and actual traffic volume",main="Error values")
+```
+
+```{r}
+rmse_rf <- sqrt(mean((test_data$traffic_volume - predictions_rf)^2))
+mae_rf <- mean(abs(test_data$traffic_volume - predictions_rf))
+rsq_rf <- cor(test_data$traffic_volume, predictions_rf)^2
+
+# Print the metrics
+cat("Random Forest RMSE:", rmse_rf, "\n")
+cat("Random Forest MAE:", mae_rf, "\n")
+cat("Random Forest R-squared:", rsq_rf, "\n")
+prediction_rf<-data.frame(date_time=test_data$date_time,traffic_volume=as.integer(predictions_rf))
+write.csv(prediction_rf,"rf.csv",row.names = F)
+```
+
+```{r}
+#XGB gradient boosting
+model_xgb<-train(traffic_volume~temp + weather_main+ rain_1h + clouds_all + holiday+date+time , data = train_data,method="xgbTree",trControl=trainControl("cv",number = 10),verbosity=0)
+print(model_xgb)
+```
+
+```{r}
+predictions_xgb<-predict(model_xgb,test_data)
+
+prediction_xgb<-data.frame(date_time=test_data$date_time,traffic_volume=as.integer(predictions_xgb))
+write.csv(prediction_xgb,"xgb.csv",row.names = F)
+```
+
+```{r}
+# Evaluate the model's accuracy
+hist(ae(predictions_xgb,test_data$traffic_volume),xlab="Difference between predicted and actual traffic volume",main="Error values")
+
+```
+
+```{r}
+rmse_gb <- sqrt(mean((test_data$traffic_volume - predictions_xgb)^2))
+mae_gb <- mean(abs(test_data$traffic_volume - predictions_xgb))
+rsq_gb <- cor(test_data$traffic_volume, predictions_xgb)^2
+
+# Print the metrics
+cat("Gradient Boosting RMSE:", rmse_gb, "\n")
+cat("Gradient Boosting MAE:", mae_gb, "\n")
+cat("Gradient Boosting R-squared:", rsq_gb, "\n")
+```
+
+```{r}
+#arima
+ts_data <- traffic_data[, c("traffic_volume")]
+ts_data <-  ts(xts(traffic_data$traffic_volume, order.by = traffic_data$date), start = min(traffic_data$date))
+```
+
+```{r}
+model_ar <- auto.arima(ts_data)
+prediction_ar <- forecast(model_ar, 10) 
+plot(prediction_ar, main = "forecasting_data for ts_data")
+```
+
+```{r}
+summary(model_ar)
+```
+
+
